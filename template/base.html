@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Ultimate Translator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <style>
+    body {
+        margin: 0;
+        font-family: 'Segoe UI', sans-serif;
+        background: linear-gradient(135deg, #4caf50, #81c784);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+    }
+    .top-nav {
+        position: fixed;
+        top: 10px;
+        right: 20px;
+        color: white;
+    }
+    .top-nav a {
+        color: white;
+        margin-left: 15px;
+        text-decoration: none;
+        font-weight: bold;
+    }
+    </style>
+</head>
+
+<body>
+
+<div class="top-nav">
+    {% if session.get("user_id") %}
+        <a href="/">Home</a>
+        <a href="/logout">Logout</a>
+    {% else %}
+        <a href="/login">Login</a>
+        <a href="/signup">Sign Up</a>
+    {% endif %}
+</div>
+
+{% block content %}{% endblock %}
+
+</body>
+</html>
