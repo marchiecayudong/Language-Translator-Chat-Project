@@ -4,12 +4,26 @@ from googletrans import Translator
 import psycopg2
 import os
 from datetime import datetime
+from urllib.parse import urlparse
+
+# -----------------------
+# APP CONFIG
+# -----------------------
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "devkey")
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
+
+# Required for Render PostgreSQL
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable not set!")
+
+# Render sometimes gives postgres:// instead of postgresql://
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 translator = Translator()
-DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 # -----------------------
@@ -17,7 +31,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 # -----------------------
 
 def get_db():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 # -----------------------
@@ -63,15 +77,18 @@ def signup():
         username = request.form["username"]
         password = generate_password_hash(request.form["password"])
 
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO users (username, password) VALUES (%s, %s)",
-            (username, password)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO users (username, password) VALUES (%s, %s)",
+                (username, password)
+            )
+            conn.commit()
+            cur.close()
+            conn.close()
+        except Exception as e:
+            return f"Error creating user: {str(e)}"
 
         return redirect("/login")
 
@@ -110,7 +127,7 @@ def logout():
 
 
 # -----------------------
-# MAIN CHAT ROUTE
+# MAIN TRANSLATOR ROUTE
 # -----------------------
 
 @app.route("/", methods=["GET", "POST"])
@@ -123,7 +140,7 @@ def index():
     conn = get_db()
     cur = conn.cursor()
 
-    # Clear chat
+    # Clear chat history
     if request.method == "POST" and request.form.get("action") == "clear":
         cur.execute(
             "DELETE FROM translations WHERE user_id = %s",
@@ -135,12 +152,18 @@ def index():
         return redirect("/")
 
     # New translation
-    if request.method == "POST":
+    if request.method == "POST" and request.form.get("text"):
         text = request.form["text"]
         target_lang = request.form["language"]
 
-        translation = translator.translate(text, dest=target_lang)
-        detected_lang = translation.src
+        try:
+            translation = translator.translate(text, dest=target_lang)
+            detected_lang = translation.src
+            translated_text = translation.text
+        except Exception as e:
+            cur.close()
+            conn.close()
+            return f"Translation error: {str(e)}"
 
         cur.execute("""
             INSERT INTO translations
@@ -149,14 +172,14 @@ def index():
         """, (
             user_id,
             text,
-            translation.text,
+            translated_text,
             detected_lang,
             target_lang
         ))
 
         conn.commit()
 
-    # Load chat history
+    # Load history
     cur.execute("""
         SELECT original, translated, detected, target, created_at
         FROM translations
@@ -182,7 +205,11 @@ def index():
 
 
 # -----------------------
+# STARTUP
+# -----------------------
+
+# Ensure tables exist in production
+init_db()
 
 if __name__ == "__main__":
-    init_db()
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000)
