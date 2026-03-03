@@ -1,10 +1,8 @@
-from flask import Flask, render_template, request, redirect, session
+from flask import Flask, render_template, request, redirect, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 from googletrans import Translator
 import psycopg2
 import os
-from datetime import datetime
-from urllib.parse import urlparse
 
 # -----------------------
 # APP CONFIG
@@ -13,13 +11,11 @@ from urllib.parse import urlparse
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key")
 
-# Required for Render PostgreSQL
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable not set!")
+    raise ValueError("DATABASE_URL is not set!")
 
-# Render sometimes gives postgres:// instead of postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -27,16 +23,12 @@ translator = Translator()
 
 
 # -----------------------
-# DATABASE CONNECTION
+# DATABASE
 # -----------------------
 
 def get_db():
     return psycopg2.connect(DATABASE_URL, sslmode="require")
 
-
-# -----------------------
-# INITIALIZE TABLES
-# -----------------------
 
 def init_db():
     conn = get_db()
@@ -87,10 +79,10 @@ def signup():
             conn.commit()
             cur.close()
             conn.close()
-        except Exception as e:
-            return f"Error creating user: {str(e)}"
-
-        return redirect("/login")
+            flash("Account created! Please login.")
+            return redirect("/login")
+        except Exception:
+            flash("Username already exists.")
 
     return render_template("signup.html")
 
@@ -115,7 +107,7 @@ def login():
             session["user_id"] = user[0]
             return redirect("/")
 
-        return "Invalid login credentials"
+        flash("Invalid credentials")
 
     return render_template("login.html")
 
@@ -127,7 +119,7 @@ def logout():
 
 
 # -----------------------
-# MAIN TRANSLATOR ROUTE
+# MAIN ROUTE
 # -----------------------
 
 @app.route("/", methods=["GET", "POST"])
@@ -140,46 +132,38 @@ def index():
     conn = get_db()
     cur = conn.cursor()
 
-    # Clear chat history
-    if request.method == "POST" and request.form.get("action") == "clear":
-        cur.execute(
-            "DELETE FROM translations WHERE user_id = %s",
-            (user_id,)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        return redirect("/")
+    if request.method == "POST":
 
-    # New translation
-    if request.method == "POST" and request.form.get("text"):
-        text = request.form["text"]
-        target_lang = request.form["language"]
-
-        try:
-            translation = translator.translate(text, dest=target_lang)
-            detected_lang = translation.src
-            translated_text = translation.text
-        except Exception as e:
+        # Clear chat
+        if request.form.get("action") == "clear":
+            cur.execute("DELETE FROM translations WHERE user_id = %s", (user_id,))
+            conn.commit()
             cur.close()
             conn.close()
-            return f"Translation error: {str(e)}"
+            return redirect("/")
 
-        cur.execute("""
-            INSERT INTO translations
-            (user_id, original, translated, detected, target)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (
-            user_id,
-            text,
-            translated_text,
-            detected_lang,
-            target_lang
-        ))
+        # Translate
+        text = request.form.get("text")
+        target_lang = request.form.get("language")
 
-        conn.commit()
+        if text:
+            try:
+                translation = translator.translate(text, dest=target_lang)
+                cur.execute("""
+                    INSERT INTO translations
+                    (user_id, original, translated, detected, target)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    user_id,
+                    text,
+                    translation.text,
+                    translation.src,
+                    target_lang
+                ))
+                conn.commit()
+            except Exception:
+                flash("Translation failed.")
 
-    # Load history
     cur.execute("""
         SELECT original, translated, detected, target, created_at
         FROM translations
@@ -191,25 +175,19 @@ def index():
     cur.close()
     conn.close()
 
-    history = []
-    for row in rows:
-        history.append({
-            "original": row[0],
-            "translated": row[1],
-            "detected": row[2],
-            "target": row[3],
-            "time": row[4].strftime("%Y-%m-%d %H:%M")
-        })
+    history = [{
+        "original": r[0],
+        "translated": r[1],
+        "detected": r[2],
+        "target": r[3],
+        "time": r[4].strftime("%Y-%m-%d %H:%M")
+    } for r in rows]
 
     return render_template("index.html", history=history)
 
 
-# -----------------------
-# STARTUP
-# -----------------------
-
-# Ensure tables exist in production
+# Initialize DB in production
 init_db()
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run()
